@@ -1,0 +1,10 @@
+.venv/Lib/site-packages/
+.venv/Scripts/
+routes/__pycache__/
+exceptions/__pycache__/
+dependencies/__pycache__/
+schema/__pycache__/
+models/__pycache__/
+security/__pycache__/authorization_middleware.cpython-312.pyc
+.venv/pyvenv.cfg
+.idea/

@@ -1,0 +1,228 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include "DHT.h"
+#include <ArduinoJson.h>
+
+#define mqtt_server "192.168.230.229"
+#define mqtt_port 1883 
+#define dhttype DHT22
+#define dhtpin 4
+#define TRIG_PIN 5   
+#define ECHO_PIN 18  
+
+int pumpPin = 22;
+int ledPin = 13; 
+int A0_PIN = 35;
+int D0_PIN = 23;
+int sensor_pin = 33;
+int moisture, sensor_analog;
+int autoMode = 1;
+int pumpState = 0;
+int ledState = 0;
+const char* ssid = "OPPO Reno5";   
+const char* password = "tungdzk3";
+
+DHT dht(dhtpin, dhttype);
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String message;
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.println(message);
+  if (String(topic) == "/device/light") {
+    if (ledState == 0) {
+      digitalWrite(13, HIGH); 
+      ledState = 1;
+    } else {
+      digitalWrite(13, LOW);   
+      ledState = 0;
+    }
+  }
+  if (String(topic) == "/device/water-pump") {
+    if (pumpState == 0) {
+      digitalWrite(22, HIGH); 
+      pumpState = 1;
+    } else {
+      digitalWrite(22, LOW); 
+      pumpState = 0; 
+    }
+  }
+  if (String(topic) == "/device/mode") {
+    if (autoMode == 1) {
+      autoMode = 0;  
+    } else {
+      autoMode = 1;   
+    }
+  }
+  if (String(topic) == "esp32/control") {
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, message);
+
+    if (error) {
+        Serial.print(F("Failed to parse JSON: "));
+        Serial.println(error.f_str());
+        return;
+    }
+
+    if (doc.containsKey("light")) {
+      bool lightUsed = doc["light"];
+      if (lightUsed) {
+          ledState = 1;
+          digitalWrite(13, HIGH);  
+      } else {
+          ledState = 0;
+          digitalWrite(13, LOW);   
+      }
+    }
+    if (doc.containsKey("water_pump")) {
+      bool pumpUsed = doc["water_pump"];
+      if (pumpUsed) {
+          pumpState = 1;
+          digitalWrite(22, HIGH); 
+      } else {
+          pumpState = 0;
+          digitalWrite(22, LOW);  
+      }
+    }
+    String payload2 = "{";
+    payload2 += "\"led\":";
+    payload2 += String(ledState); 
+    payload2 += ",\"pump\":";
+    payload2 += String(pumpState); 
+    payload2 += ",\"manual\":";
+    payload2 += String(autoMode);
+    payload2 += "}";
+
+    client.publish("/device/status", (char*) payload2.c_str());
+  }
+}
+
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+
+    if (client.connect(clientId.c_str())) {
+      client.subscribe("esp32/control");
+      client.subscribe("/device/light");
+      client.subscribe("/device/mode");
+      client.subscribe("/device/water-pump");
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+void mqttTask(void * parameter) {
+  for(;;) {
+    if (!client.connected()) {
+      reconnect();
+    }
+    client.loop();
+    delay(10);
+  }
+}
+
+void setup() {
+  pinMode(ledPin, OUTPUT);
+  pinMode(pumpPin, OUTPUT);
+  dht.begin();
+  pinMode(D0_PIN, INPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  Serial.begin(9600);
+
+  setup_wifi();
+  client.setServer(mqtt_server, mqtt_port); 
+  client.setCallback(callback);
+
+  xTaskCreatePinnedToCore(
+    mqttTask,     // Hàm task
+    "MQTT Task",  // Tên task
+    4096,         // Kích thước stack
+    NULL,         // Tham số truyền vào (không cần)
+    1,            // Độ ưu tiên của task
+    NULL,         // ID task (không cần)
+    0             // Chạy trên core 0
+  );
+}
+
+void loop() {
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+  if (isnan(h) || isnan(t)) {
+    Serial.println("Error reading DHT sensor data");
+  }
+
+  int lightValue = analogRead(A0_PIN);
+
+  sensor_analog = analogRead(sensor_pin);
+  moisture = (100 - ((sensor_analog / 4095.00) * 100));
+
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  float distance = (duration * 0.0343) / 2;
+
+  String payload = "{";
+  payload += "\"temperature\":";
+  payload += String(t);
+  payload += ",\"humidity\":";
+  payload += String(h);
+  payload += ",\"light\":";
+  payload += String(lightValue);
+  payload += ",\"moisture\":";
+  payload += String(moisture);
+  payload += ",\"water\":";
+  payload += String(distance); 
+  payload += ",\"autoMode\":";
+  payload += String(autoMode);
+  payload += "}";
+
+  String payload2 = "{";
+  payload2 += "\"led\":";
+  payload2 += String(ledState); 
+  payload2 += ",\"pump\":";
+  payload2 += String(pumpState); 
+  payload2 += ",\"manual\":";
+  payload2 += String(autoMode);
+  payload2 += "}";
+
+  client.publish("/device/status", (char*) payload2.c_str());
+  client.publish("/device/data", (char*) payload.c_str());
+  delay(5000);
+}
